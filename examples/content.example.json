@@ -1,0 +1,74 @@
+{
+  "meta": {
+    "title_zh": "示例：某篇论文的中文标题",
+    "title_en": "An Example Paper Title for Demonstration",
+    "authors": "张三 ᵃ,ᵇ，李四 ᵇ",
+    "affiliations": [
+      "ᵃ 某某大学 土木工程学院，城市，中国",
+      "ᵇ 某某研究所，城市，德国"
+    ],
+    "correspondence": "通讯作者：zhangsan@example.edu.cn",
+    "note": "预印本，DOI: 10.0000/example.2026.000001；许可：CC-BY 4.0",
+    "abstract": "这里是中文摘要。建议 300–600 字，忠实转述原文，不增删结论。注意保留原文中的关键数值与限定条件。",
+    "keywords": "语义分割 · 断裂力学 · 深度学习 · 结构健康监测",
+    "nomenclature": {
+      "symbols": [
+        ["a₀", "初始裂纹尺寸"],
+        ["B", "试样厚度"],
+        ["σ", "标准差"]
+      ],
+      "abbr": [
+        ["HOM", "同质数据集"],
+        ["mIoU", "平均交并比"]
+      ]
+    }
+  },
+  "figures": {
+    "1": "数据集组成示意",
+    "2": "三个数据集的统计对比"
+  },
+  "tables": {
+    "1": {
+      "caption": "表 1：数据集特征汇总",
+      "header": ["特征", "同质", "异质"],
+      "rows": [
+        ["N", "200", "588"],
+        ["N_test", "38", "24"]
+      ],
+      "note": "注：N 表示图像总数。"
+    }
+  },
+  "body": [
+    ["h1", "1. 引言"],
+    ["p", "这是第一段正文。译完后请对照 blocks.txt 检查是否有遗漏的段落。"],
+    ["p", "第二段正文，包含公式引用与文献引用[1,2]。"],
+    ["h2", "2. 材料与方法"],
+    ["fig", "1"],
+    ["p", "图 1 展示了数据集组成。"],
+    ["eq", "mIoU = (1/n_classes) Σ IoU_j", "(1)"],
+    ["h3", "2.1.1 数据集划分"],
+    ["li", "• 训练集：80%"],
+    ["li", "• 测试集：10%"],
+    ["table", "1"],
+    ["fig", "2"],
+    ["h1", "3. 结论"],
+    ["p", "结论段。"]
+  ],
+  "back": {
+    "ack": "感谢某某在数据标注上的帮助。",
+    "ack_list": ["合作单位 A", "合作单位 B"],
+    "funding": "本研究由国家自然科学基金（编号 XXXXX）资助。",
+    "refs": {
+      "items": [
+        "1. ASTM E399-22 (2022) Standard Test Method for Linear-Elastic Plane-Strain Fracture Toughness of Metallic Materials. ASTM International.",
+        "2. Ronneberger O, Fischer P, Brox T (2015) U-Net: Convolutional Networks for Biomedical Image Segmentation."
+      ]
+    }
+  },
+  "style": {
+    "body_size": 10.5,
+    "line_spacing": 1.32,
+    "figure_width_cm": 14.0,
+    "figure_max_height_cm": 17.0
+  }
+}
