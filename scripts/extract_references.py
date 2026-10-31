@@ -2,10 +2,13 @@
 # -*- coding: utf-8 -*-
 """抽取参考文献条目（保持英文原文）。
 
-支持两种编号风格：`1. Author...` 与 `[1] Author...`。
-切分策略用**纯前瞻**（`\\s(?=N. 大写)`），不用后视断言——
-真实论文里第 1 条常以 "...PA"、"...doi:..." 之类无句点内容结尾，
-用 `(?<=[.)])` 后视会导致整段切不开（只得 1 条）。
+要点（都是真实论文里踩出来的）：
+1. 编号顺序法：只按 1,2,3… 依次向后找，遇到断号即停。
+   这比“凡 N. 大写就切”稳得多——参考文献里常有 `vol. 97. PMLR` 这类
+   会被误认成第 97 条的内容。
+2. 标题可能是 `R EFERENCES`（PDF 拆字），要去掉空白再比。
+3. 第 1 条常以 `...PA` / `...doi:...` 结尾（无句点），
+   所以不能用 `(?<=[.)])` 后视断言切分（会把 38 条切成 1 条）。
 
 用法:
     python extract_references.py --pdf INPUT.pdf --start-page 23
@@ -21,57 +24,120 @@ try:
 except ImportError:
     sys.exit("需要 PyMuPDF：pip install pymupdf")
 
-NUM_RE = re.compile(r"^\s*(?:\[(\d{1,2})\]|(\d{1,2})\.)")
+HEAD_WORDS = ("references", "bibliography", "参考文献")
 HEADER_NOISE = [
-    r"Preprint submitted to [^.]{0,120}",
+    r"Preprint submitted to [^.]{0,140}",
     r"Available (?:under|at) https?://\S+",
-    r"Preprints? \(www\.preprint\.org\)[^.]*",
+    r"Preprints? \(www\.preprint\.org\)[^.]{0,80}",
 ]
+
+
+def find_heading_page(doc, start_page):
+    """返回 (页码索引, 标题行之后的行列表)。"""
+    for pno in range(start_page - 1, doc.page_count):
+        lines = doc[pno].get_text("text").splitlines()
+        for i, ln in enumerate(lines):
+            if re.sub(r"\s+", "", ln).lower() in HEAD_WORDS:
+                return pno, lines[i + 1:]
+    return None, None
+
+
+def collect_text(doc, pno, tail_lines):
+    parts = ["\n".join(tail_lines)]
+    for j in range(pno + 1, doc.page_count):
+        parts.append(doc[j].get_text("text"))
+    raw = " ".join(parts)
+    for pat in HEADER_NOISE:
+        raw = re.sub(pat, " ", raw)
+    raw = re.sub(r"\s+", " ", raw).strip()
+    raw = re.sub(r"\s*Appendix\s*$", "", raw, flags=re.I)
+    return raw
+
+
+def pick_style(raw):
+    if re.search(r"\[1\]", raw):
+        return "bracket"
+    if re.search(r"(?:^|[\s.])1\.\s+[A-Z]", raw):
+        return "dot"
+    return None
+
+
+def extract_sequential(raw, style):
+    """按编号 1,2,3… 顺序提取，断号即停。"""
+    entries, pos, k = [], 0, 1
+    while True:
+        if style == "bracket":
+            pat = re.compile(r"\[%d\]" % k)
+        else:
+            # “k. ”且前面是空白或句末，避免把 97. 里的 7. 当成第 7 条
+            pat = re.compile(r"(?:^|(?<=[\s.]))%d\.\s+(?=[A-Z])" % k)
+        m = pat.search(raw, pos)
+        if not m:
+            break
+        start = m.start()
+        if style == "bracket":
+            nxt = re.compile(r"\[%d\]" % (k + 1)).search(raw, start + 1)
+        else:
+            nxt = re.compile(r"(?:^|(?<=[\s.]))%d\.\s+(?=[A-Z])" % (k + 1)).search(raw, start + 1)
+        end = nxt.start() if nxt else len(raw)
+        entries.append(raw[start:end].strip())
+        pos = end
+        k += 1
+    return entries
+
+
+def extract_unnumbered(doc, pno, tail_lines):
+    """兜底：无编号（作者—年份）格式。
+
+    以「X. Y. Surname,」开头的行视为新条目起点，其余为续行。
+    """
+    lines = list(tail_lines)
+    for j in range(pno + 1, doc.page_count):
+        lines += doc[j].get_text("text").splitlines()
+
+    start_re = re.compile(r"^[A-Z]\.(?:\s?[A-Z]\.)*\s?[A-Z][a-zA-Z\-']+\s*,")
+    entries = []
+    for ln in lines:
+        ln = ln.strip()
+        if not ln or re.fullmatch(r"\d+", ln):
+            continue
+        if start_re.match(ln) or not entries:
+            entries.append(ln)
+        else:
+            if entries[-1].endswith("-") and ln[:1].islower():
+                entries[-1] = entries[-1][:-1] + ln        # 修复跨行连字符
+            else:
+                entries[-1] += " " + ln
+    return [re.sub(r"\s+", " ", e).strip() for e in entries if len(e) > 20]
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pdf", required=True)
     ap.add_argument("--start-page", type=int, default=1, help="从第几页开始找 References（1-based）")
-    ap.add_argument("--json", default=None, help="把结果写到 JSON")
+    ap.add_argument("--json", default=None)
     args = ap.parse_args()
 
     doc = fitz.open(args.pdf)
-    chunks, started = [], False
-    for pno in range(args.start_page - 1, doc.page_count):
-        t = doc[pno].get_text("text")
-        if not started:
-            m = re.search(r"\bReferences\b", t)
-            if not m:
-                continue
-            started = True
-            t = t[m.end():]
-        chunks.append(t)
+    pno, tail = find_heading_page(doc, args.start_page)
+    if pno is None:
+        sys.exit(f"在 {args.start_page} 页之后未找到 References 标题")
 
-    raw = " ".join(chunks)
-    for pat in HEADER_NOISE:
-        raw = re.sub(pat, " ", raw)
-    raw = re.sub(r"\s+", " ", raw).strip()
-    raw = re.sub(r"\s*Appendix\s*$", "", raw, flags=re.I)
+    raw = collect_text(doc, pno, tail)
+    style = pick_style(raw)
 
-    # 纯前瞻切分
-    parts = re.split(r"\s(?=(?:\[\d{1,2}\]|\d{1,2}\.\s+[A-Z]))", raw)
-    refs = [p.strip() for p in parts if NUM_RE.match(p.strip()) and len(p.strip()) > 25]
+    if style is None:
+        refs = extract_unnumbered(doc, pno, tail)
+        kind = "无编号（作者—年份）"
+    else:
+        refs = extract_sequential(raw, style)
+        refs = [r for r in refs if len(r) > 20]
+        kind = "[N]" if style == "bracket" else "N."
 
-    nums = []
-    for r in refs:
-        m = re.match(r"^\s*(?:\[(\d{1,2})\]|(\d{1,2})\.)", r)
-        if m:
-            nums.append(int(m.group(1) or m.group(2)))
-
+    print(f"标题所在页: p{pno + 1} | 编号风格: {kind}")
     print(f"提取到 {len(refs)} 条参考文献")
-    if nums:
-        print(f"编号范围 {min(nums)}..{max(nums)}")
-        missing = [i for i in range(min(nums), max(nums) + 1) if i not in nums]
-        if missing:
-            print(f"!! 缺失编号: {missing}  —— 说明切分正则仍需调整")
-        else:
-            print("编号连续，无缺失")
+    if style is not None and refs:
+        print(f"编号范围 1..{len(refs)}（顺序提取，无断号）")
     for r in refs[:2]:
         print("  样例:", r[:100])
 

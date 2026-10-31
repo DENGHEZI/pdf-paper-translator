@@ -77,3 +77,11 @@ python scripts/extract_references.py --pdf INPUT.pdf --start-page 23
 - [ ] 参考文献条数 = 原文编号最大值
 - [ ] 中文无跨栏溢出、无段落串行、无文字出界
 - [ ] 公式与式号成对出现
+
+## 脚本能力边界（已验证）
+
+- `extract_figures.py` 自动判单栏/双栏，并按图所在栏裁切；支持跨页图、长图注、页脚排除。
+- `extract_references.py` 支持三种格式：`[N]`、`N.`、**无编号（作者—年份）**。
+- 暂不支持：扫描版 PDF（无文本层，需先 OCR）；纯矢量图内文字的翻译。
+- 已在 5 篇真实论文上回归（双栏 IEEE / 单栏 Elsevier 44 页 / 数据论文 / 视觉检测 / 断口分割），
+  图片与参考文献数量全部与原文一致，详见 `references/pitfalls.md` 末尾的回归表。

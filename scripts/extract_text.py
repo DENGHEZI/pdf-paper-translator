@@ -23,8 +23,8 @@ except ImportError:
 CAP_RE = re.compile(r"^\s*(?:Figure|Fig\.?|图)\s*(\d+|[A-Z]\d+)\s*[:.]?", re.I)
 TAB_RE = re.compile(r"^\s*(?:Table|表)\s*(\d+|[IVX]+|[A-Z]\d+)\s*[:.]?", re.I)
 H1_RE = re.compile(r"^\s*(?:\d+\.|[IVX]+\.)\s+[A-Z]")
-H2_RE = re.compile(r"^\s*\d+\.\d+\.?\s+[A-Z]")
-H3_RE = re.compile(r"^\s*\d+\.\d+\.\d+\.?\s+[A-Z]|^\s*\(?\d+\)\s+[A-Z]|^\s*[a-z]\)\s")
+H2_RE = re.compile(r"^\s*(?:\d+\.\d+\.?|[A-Z]\.)\s+[A-Z]")          # 1.2 Xxx / A. Xxx
+H3_RE = re.compile(r"^\s*(?:\d+\.\d+\.\d+\.?\s+[A-Z]|\(?\d+\)\s+[A-Z]|[a-z]\)\s)")
 
 
 def norm(s):
@@ -34,18 +34,20 @@ def norm(s):
 
 
 def classify(txt, size, bold, is_cap, is_tab, pno, last_page):
+    # 参考文献标题：PDF 里常被拆成 “R EFERENCES”，要忽略字间空格
+    if re.sub(r"\s+", "", txt).lower() in ("references", "bibliography", "参考文献"):
+        return "refs_title"
     if is_cap:
         return "figcap"
     if is_tab:
         return "tablecap"
     if H3_RE.match(txt):
         return "h3"
-    if H2_RE.match(txt):
-        return "h2"
+    # 先判 h1（"1. Xxx" / "IV. Xxx"），否则 "I. INTRODUCTION" 会被 [A-Z]\. 抢成 h2
     if H1_RE.match(txt):
         return "h1"
-    if re.match(r"^\s*References\s*$", txt, re.I):
-        return "refs_title"
+    if H2_RE.match(txt):
+        return "h2"
     if pno == last_page and re.match(r"^\s*(?:\[\d+\]|\d+\.)\s", txt):
         return "ref"
     return "body"
@@ -60,6 +62,7 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
     doc = fitz.open(args.pdf)
     blocks, lines_out, full = [], [], []
+    in_refs = False   # 遇到 References 标题后，其后所有块都视为参考文献
 
     for pno in range(doc.page_count):
         page = doc[pno]
@@ -86,6 +89,10 @@ def main():
             is_tab = any(ln and TAB_RE.match(ln) for ln in block_lines) and bh < 60
             key = f"p{pno + 1}_{bi}"
             cat = classify(txt, size, bold, is_cap, is_tab, pno + 1, doc.page_count)
+            if cat == "refs_title":
+                in_refs = True
+            elif in_refs and cat in ("body", "h1", "h2", "h3"):
+                cat = "ref"
 
             blocks.append({
                 "key": key, "page": pno + 1,

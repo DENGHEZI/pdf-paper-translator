@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""按图注锚定抽取论文插图（整块裁切渲染），处理真实论文里的四种坑：
+"""按图注锚定抽取论文插图（整块裁切渲染）。
 
-1. 图注是居中窄块（宽 170~390pt）——宽度阈值必须放小到 ~120；
-2. 正文里出现 “Figure 1 shows…” 开头的段落——用「块高 < 45pt」排除；
-3. 图内文字与正文同字号——不能靠字号区分，只能靠宽度+长度；
-4. 图跨页（图在上页底部、图注在下页顶部）——自动回退到上一页。
+真实论文里会遇到的六种情况都已处理：
+1. 图注是居中窄块（宽 170~390pt）——宽度阈值放小到 120；
+2. 图注块首行可能是空行——扫描块内任意一行；
+3. 正文里 “Figure 1 shows…” 开头的段落——按「编号后首个词是否小写」排除；
+4. 图注很长（3~5 行，块高 50~80pt）——不能用「块高 < 45」一刀切；
+5. 图跨页（图在上页底部、图注在下页顶部）——回退到上一页；
+6. 双栏论文——按栏裁切，不能按整页宽，否则会把邻栏正文裁进来。
 
 用法:
     python extract_figures.py --pdf INPUT.pdf --out-dir work/figures [--dpi 250]
 产物:
-    fig_<label>.png     每张图（250dpi）
-    figures.json        清单：label / page / rect / size / 用于核对的非白像素占比
+    fig_<label>.png     每张图
+    figures.json        清单：label / page / rect / dpi / 非白占比 / 最长行
 """
 import argparse
 import json
@@ -24,12 +27,31 @@ try:
 except ImportError:
     sys.exit("需要 PyMuPDF：pip install pymupdf")
 
-CAP_RE = re.compile(r"^\s*(?:Figure|Fig\.?|图)\s*(\d+|[A-Z]\d+)\s*[:.]?\s", re.I)
+# 图注：Figure/Fig./图 + 编号 + 可选分隔符 + 说明
+CAP_HEAD = re.compile(r"^\s*(?:Figure|Fig\.?|图)\s*(\d+|[A-Z]\d+)\s*([:：.])?\s*(.*)$", re.I)
+TABLE_HEAD = re.compile(r"^\s*(?:Table|表)\s*(\d+|[IVX]+|[A-Z]\d+)\s*[:：.]?\s*(.*)$", re.I)
+
 PAGE_MARGIN_TOP = 55.0
+MAX_CAPTION_H = 120.0   # 图注块最高多少（再高就不是图注了）
+MIN_CAPTION_W = 120.0
 
 
-def content_span(doc, sample=6):
-    """由文本块推内容区左右边界。"""
+def match_caption(line):
+    """返回图号；若这行其实是 “Figure 1 shows…” 这种正文，返回 None。"""
+    m = CAP_HEAD.match(line)
+    if not m:
+        return None
+    sep, rest = m.group(2), m.group(3).strip()
+    # 编号后首个词若是小写英文开头 → 正文（如 “Figure 1 shows / illustrates / depicts”）
+    if rest and rest[0].isascii() and rest[0].islower():
+        return None
+    # 无分隔符却以 “(” 开头 → 正文里的 “Figure 4(A) is increased …”
+    if not sep and rest.startswith("("):
+        return None
+    return m.group(1)
+
+
+def content_span(doc, sample=8):
     xs = []
     for pno in range(min(doc.page_count, sample)):
         for b in doc[pno].get_text("dict")["blocks"]:
@@ -37,20 +59,42 @@ def content_span(doc, sample=6):
                 xs += [b["bbox"][0], b["bbox"][2]]
     if not xs:
         return 60.0, doc[0].rect.width - 60
-    xs.sort()
-    lo = xs[max(0, int(len(xs) * 0.02))]
-    hi = xs[min(len(xs) - 1, int(len(xs) * 0.98))]
-    return lo - 4, hi + 4
+    pw = doc[0].rect.width
+    xs = sorted(x for x in xs if x > pw * 0.05)   # 丢掉页边水印/装订线
+    if not xs:
+        return 60.0, pw - 60
+    return xs[max(0, int(len(xs) * 0.03))] - 2, xs[min(len(xs) - 1, int(len(xs) * 0.97))] + 2
+
+
+def column_ranges(doc, sample=6):
+    """判断是否双栏，并给出左右栏的 x 范围。"""
+    lo, hi = content_span(doc)
+    mid = (lo + hi) / 2
+    left, right = [], []
+    for pno in range(min(doc.page_count, sample)):
+        for b in doc[pno].get_text("dict")["blocks"]:
+            if b["type"] != 0:
+                continue
+            x0, x1 = b["bbox"][0], b["bbox"][2]
+            if x0 < doc[0].rect.width * 0.05:      # 页边水印/装订线，跳过
+                continue
+            if x1 <= mid + 2:
+                left += [x0, x1]
+            elif x0 >= mid - 2:
+                right += [x0, x1]
+    if len(left) > 16 and len(right) > 16:
+        return True, (min(left), max(left)), (min(right), max(right))
+    return False, (lo, hi), (lo, hi)
 
 
 def scan(page):
-    """返回 (captions, body_bottoms)。captions = [(label, y0, y1)]
+    """返回 (captions, body_bottoms)。
 
-    注意：图注块的首行可能是**空行**（排版把编号前的空行也算进块里），
-    所以要扫描块内任意一行，而不是只看 lines[0]。
+    captions = [(label, y0, y1, x0, x1)]
+    body_bottoms = [y1, ...]  只统计“整幅正文段落”，用于定图区上界
     """
     caps, body = [], []
-    cw = page.rect.width
+    pw = page.rect.width
     for b in page.get_text("dict")["blocks"]:
         if b["type"] != 0:
             continue
@@ -59,21 +103,38 @@ def scan(page):
         lines = ["".join(s["text"] for s in l["spans"]).strip() for l in b["lines"]]
         if not lines:
             continue
+
         label = None
-        for ln in lines:
-            if not ln:
-                continue
-            m = CAP_RE.match(ln)
-            if m:
-                label = m.group(1)
-                break
-        if label and h < 45 and w > 120:
-            caps.append((label, b["bbox"][1], b["bbox"][3]))
+        if h < MAX_CAPTION_H and w > MIN_CAPTION_W:
+            for ln in lines:
+                if not ln:
+                    continue
+                label = match_caption(ln)
+                if label:
+                    break
+        if label:
+            caps.append((label, b["bbox"][1], b["bbox"][3], b["bbox"][0], b["bbox"][2]))
             continue
-        if w > cw * 0.70 and len(" ".join(lines)) >= 80:
+
+        # 正文段落：很宽 + 较长 + 不是表注
+        joined = " ".join(lines)
+        is_table_cap = bool(TABLE_HEAD.match(lines[0])) if lines and lines[0] else False
+        if w > pw * 0.70 and len(joined) >= 80 and not is_table_cap:
             body.append(b["bbox"][3])
     caps.sort(key=lambda x: x[1])
     return caps, body
+
+
+def footer_top(page):
+    """页脚（页码/版权行）上沿。"""
+    h = page.rect.height
+    top = h - 20
+    for b in page.get_text("dict")["blocks"]:
+        if b["type"] != 0 or b["bbox"][1] < h * 0.88:
+            continue
+        if (b["bbox"][3] - b["bbox"][1]) < 40:
+            top = min(top, b["bbox"][1] - 2)
+    return top
 
 
 def main():
@@ -88,42 +149,44 @@ def main():
 
     os.makedirs(args.out_dir, exist_ok=True)
     doc = fitz.open(args.pdf)
-    lo, hi = content_span(doc)
-    left = args.left if args.left is not None else lo
-    right = args.right if args.right is not None else hi
-    print(f"内容区 x: {left:.0f} - {right:.0f}")
+
+    two_col, left_col, right_col = column_ranges(doc)
+    print(f"版式: {'双栏' if two_col else '单栏'}"
+          f" | 左栏 x {left_col[0]:.0f}-{left_col[1]:.0f}"
+          + (f" | 右栏 x {right_col[0]:.0f}-{right_col[1]:.0f}" if two_col else ""))
+    if args.left is not None:
+        left_col = (args.left, left_col[1])
+    if args.right is not None:
+        right_col = (right_col[0], args.right)
+    mid = (left_col[0] + right_col[1]) / 2
 
     results = []
     for pno in range(doc.page_count):
         page = doc[pno]
         caps, body = scan(page)
         prev = PAGE_MARGIN_TOP
-        for label, cy0, cy1 in caps:
+        for label, cy0, cy1, cx0, cx1 in caps:
+            # 选栏：按图注中心落在哪一栏
+            if two_col and (cx0 + cx1) / 2 > mid:
+                x0, x1 = right_col
+            else:
+                x0, x1 = left_col
+
             above = [y for y in body if y <= cy0 - 2]
             top = max([PAGE_MARGIN_TOP, prev] + above)
             if top > cy0 - 40:
                 top = max(prev, PAGE_MARGIN_TOP)
-            rect = fitz.Rect(left, top + 2, right, cy0 - 2)
+            rect = fitz.Rect(x0, top + 2, x1, cy0 - 2)
 
             if rect.height < 40 and pno > 0 and not args.no_cross_page:
-                # 跨页：图在上一页底部
-                prev_page = doc[pno - 1]
-                _, body_prev = scan(prev_page)
-                img_rects = [im["bbox"] for im in prev_page.get_image_info()]
-                if img_rects:
-                    last_y0 = min(r[1] for r in img_rects if r[1] > 200)
+                pp = doc[pno - 1]
+                _, body_prev = scan(pp)
+                imgs = [im["bbox"] for im in pp.get_image_info()]
+                if imgs:
+                    last_y0 = min(r[1] for r in imgs if r[1] > 200)
                     tb = [y for y in body_prev if y <= last_y0 - 2]
                     t2 = max([PAGE_MARGIN_TOP] + tb)
-                    bottom = prev_page.rect.height - 20
-                    # 避开页脚（页码 / 版权行）：底部 12% 区域内的高度很小的文本块
-                    h = prev_page.rect.height
-                    for b in prev_page.get_text("dict")["blocks"]:
-                        if b["type"] != 0 or b["bbox"][1] < h * 0.88:
-                            continue
-                        if (b["bbox"][3] - b["bbox"][1]) < 40:
-                            bottom = min(bottom, b["bbox"][1] - 2)
-                    rect = fitz.Rect(left, t2 + 2, right, bottom)
-                    # (label, 图注所在页 1-based, 渲染页索引 0-based, rect, crossed)
+                    rect = fitz.Rect(x0, t2 + 2, x1, footer_top(pp))
                     results.append((label, pno + 1, pno - 1, rect, True))
                     prev = cy1
                     continue
@@ -144,9 +207,8 @@ def main():
 
         inner = page.get_text("text", clip=rect)
         longest = max((len(x) for x in inner.splitlines()), default=0)
-        flag = "  <-- 疑似混入正文" if longest > 110 else ""
+        flag = "  <-- 疑似混入正文" if longest > 110 and not two_col else ""
 
-        # 非白像素占比，用于识别空白裁切
         sm = pix.samples
         n = len(sm) // 3
         step = max(1, n // 4000)
@@ -157,9 +219,8 @@ def main():
         manifest.append({
             "label": label, "page": page_no,
             "rect": [round(v, 1) for v in rect],
-            "file": os.path.basename(path),
-            "dpi": args.dpi, "nonwhite": round(frac, 3),
-            "max_line_len": longest, "cross_page": crossed,
+            "file": os.path.basename(path), "dpi": args.dpi,
+            "nonwhite": round(frac, 3), "max_line_len": longest, "cross_page": crossed,
         })
         print(f"  图 {label:<3} p{page_no:<3} y{rect.y0:>5.0f}-{rect.y1:<5.0f} "
               f"{pix.width}x{pix.height} 非白={frac:>4.0%} 最长行={longest}{flag}")
