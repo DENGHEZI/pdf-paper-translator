@@ -87,14 +87,17 @@ def column_ranges(doc, sample=6):
     return False, (lo, hi), (lo, hi)
 
 
-def scan(page):
+def scan(page, col_w=None):
     """返回 (captions, body_bottoms)。
 
-    captions = [(label, y0, y1, x0, x1)]
-    body_bottoms = [y1, ...]  只统计“整幅正文段落”，用于定图区上界
+    captions = [(label, y0, y1, x0, x1)]  —— 只认块内**首个非空行**
+    body_bottoms = [y1, ...]  —— 正文段落底边，用于定图区上界
+    col_w: 该栏的内容宽度；正文块判定按它算，而不是按页宽
     """
-    caps, body = [], []
+    caps, body, tables = [], [], []
     pw = page.rect.width
+    if col_w is None:
+        col_w = pw * 0.8
     for b in page.get_text("dict")["blocks"]:
         if b["type"] != 0:
             continue
@@ -103,26 +106,33 @@ def scan(page):
         lines = ["".join(s["text"] for s in l["spans"]).strip() for l in b["lines"]]
         if not lines:
             continue
+        first_line = next((ln for ln in lines if ln), "")
+        if not first_line:
+            continue
 
         label = None
         if h < MAX_CAPTION_H and w > MIN_CAPTION_W:
-            for ln in lines:
-                if not ln:
-                    continue
-                label = match_caption(ln)
-                if label:
-                    break
+            # 只看首个非空行：正文段落末尾并进来的 “Figure 3.” 不能被当成图注
+            label = match_caption(first_line)
         if label:
             caps.append((label, b["bbox"][1], b["bbox"][3], b["bbox"][0], b["bbox"][2]))
             continue
 
-        # 正文段落：很宽 + 较长 + 不是表注
         joined = " ".join(lines)
-        is_table_cap = bool(TABLE_HEAD.match(lines[0])) if lines and lines[0] else False
-        if w > pw * 0.70 and len(joined) >= 80 and not is_table_cap:
+        # 表注：表格上方的 “Table N.” 说明
+        if TABLE_HEAD.match(first_line):
+            tables.append(b["bbox"][3])
+            continue
+        # 表格行：宽度够大 + 数字密度高 + 不太长
+        nums = re.findall(r"\d+(?:\.\d+)?", joined)
+        if w >= col_w * 0.50 and len(nums) >= 4 and 20 <= len(joined) <= 600:
+            tables.append(b["bbox"][3])
+            continue
+        # 正文段落：宽 + 较长
+        if w >= col_w * 0.72 and len(joined) >= 80:
             body.append(b["bbox"][3])
     caps.sort(key=lambda x: x[1])
-    return caps, body
+    return caps, body, tables
 
 
 def footer_top(page):
@@ -160,10 +170,13 @@ def main():
         right_col = (right_col[0], args.right)
     mid = (left_col[0] + right_col[1]) / 2
 
+    col_w = min(left_col[1] - left_col[0], right_col[1] - right_col[0]) if two_col \
+        else (left_col[1] - left_col[0])
+
     results = []
     for pno in range(doc.page_count):
         page = doc[pno]
-        caps, body = scan(page)
+        caps, body, tables = scan(page, col_w)
         prev = PAGE_MARGIN_TOP
         for label, cy0, cy1, cx0, cx1 in caps:
             # 选栏：按图注中心落在哪一栏
@@ -172,7 +185,7 @@ def main():
             else:
                 x0, x1 = left_col
 
-            above = [y for y in body if y <= cy0 - 2]
+            above = [y for y in (body + tables) if y <= cy0 - 2]
             top = max([PAGE_MARGIN_TOP, prev] + above)
             if top > cy0 - 40:
                 top = max(prev, PAGE_MARGIN_TOP)
@@ -180,7 +193,7 @@ def main():
 
             if rect.height < 40 and pno > 0 and not args.no_cross_page:
                 pp = doc[pno - 1]
-                _, body_prev = scan(pp)
+                _, body_prev, _ = scan(pp, col_w)
                 imgs = [im["bbox"] for im in pp.get_image_info()]
                 if imgs:
                     last_y0 = min(r[1] for r in imgs if r[1] > 200)

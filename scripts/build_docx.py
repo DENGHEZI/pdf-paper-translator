@@ -250,20 +250,24 @@ class Builder:
 
     def back_matter(self):
         back = self.cfg.get("back", {})
-        if back.get("ack"):
-            self.para("致谢", size=14, bold=True, align="left", indent=False,
-                      before=12, after=4, name="黑体")
-            self.para(back["ack"], size=self.base_size, indent=True, after=2)
+
+        def section(title, text):
+            if not text:
+                return
+            self.para(title, size=13, bold=True, align="left", indent=False,
+                      before=10, after=3, name="黑体")
+            for ln in str(text).split("\n"):
+                ln = ln.strip()
+                if ln:
+                    self.para(ln, size=self.base_size - 0.5, indent=True, after=3)
+
+        section("作者贡献", back.get("author_contributions"))
+
+        section("致谢", back.get("ack"))
         for item in back.get("ack_list", []):
             self.bullet("• " + item, size=self.base_size - 0.5)
-        if back.get("funding"):
-            self.para("资助", size=14, bold=True, align="left", indent=False,
-                      before=10, after=4, name="黑体")
-            self.para(back["funding"], size=self.base_size, indent=True, after=8)
-        if back.get("declaration"):
-            self.para("声明", size=14, bold=True, align="left", indent=False,
-                      before=10, after=4, name="黑体")
-            self.para(back["declaration"], size=self.base_size, indent=True, after=8)
+        section("资助", back.get("funding"))
+        section("声明", back.get("declaration"))
 
         refs = back.get("refs") or {}
         items = refs.get("items") or []
