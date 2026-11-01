@@ -259,3 +259,18 @@ MuPDF 的 HTML 引擎对纯 CJK 连续串断行不可靠，会溢出栏宽压到
 ### 33. 后置声明字段
 - `back` 新增 `author_contributions`；`funding` / `declaration` 支持 `\n` 多行
   （伦理审查、知情同意、数据可得性、利益冲突各占一行）。
+
+### 34. 横向页（/Rotate 90）让所有块变成「又窄又高」
+- 现象：某篇 MDPI 论文有 2 页横向排版（`page.rotation == 90`），
+  这两页上的文本块 bbox 宽只有 9–15pt、高 600+pt，图注被「宽 > 120」直接滤掉，
+  8 张图只抽出 7 张，且无任何警告。
+- 原因：`page.get_text("dict")` 返回的是**内容空间**坐标，横向页的文字在那里是竖的。
+- 处理：把所有 bbox 用 `page.rotation_matrix` 映射到**显示空间**再判断；
+  `get_pixmap(clip=rect)` 的 clip 本身就是显示坐标，所以渲染无需额外变换；
+  反过来给 `get_text(clip=...)` 校验时要乘 `derotation_matrix`。
+  ```python
+  r = fitz.Rect(b["bbox"])
+  if page.rotation:
+      r = r * page.rotation_matrix
+  ```
+- 校验输出里会标 `[旋转]`，便于确认。
