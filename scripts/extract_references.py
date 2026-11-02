@@ -27,6 +27,8 @@ except ImportError:
 HEAD_WORDS = ("references", "bibliography", "参考文献")
 HEADER_NOISE = [
     r"Preprint submitted to [^.]{0,140}",
+    r"Published as a conference paper at ICLR \d{4}",
+    r"Proceedings of the \w+ Conference on [^.]{0,80}",
     r"Available (?:under|at) https?://\S+",
     r"Preprints? \(www\.preprint\.org\)[^.]{0,80}",
 ]
@@ -51,6 +53,10 @@ def collect_text(doc, pno, tail_lines):
         raw = re.sub(pat, " ", raw)
     raw = re.sub(r"\s+", " ", raw).strip()
     raw = re.sub(r"\s*Appendix\s*$", "", raw, flags=re.I)
+    # 参考文献区若后面还跟着附录，截断在 APPENDIX 处
+    m_app = re.search(r"\bA\s*P\s*P\s*E\s*N\s*D\s*I\s*X\b", raw, re.I)
+    if m_app and m_app.start() > 500:
+        raw = raw[:m_app.start()]
     return raw
 
 
@@ -111,6 +117,35 @@ def extract_unnumbered(doc, pno, tail_lines):
     return [re.sub(r"\s+", " ", e).strip() for e in entries if len(e) > 20]
 
 
+def extract_by_year(doc, pno, tail_lines):
+    """兜底二：无编号且作者用全名（ICLR/NeurIPS 风格）。
+
+    这类条目几乎都以年份结尾（“… In ACL, 2020.”），所以按“年份+句点”收尾来切。
+    """
+    lines = list(tail_lines)
+    for j in range(pno + 1, doc.page_count):
+        lines += doc[j].get_text("text").splitlines()
+
+    entries, cur = [], ""
+    for ln in lines:
+        ln = ln.strip()
+        if not ln or re.fullmatch(r"\d+", ln):
+            continue
+        if len(entries) >= 20 and re.search(r"\bA\s*P\s*P\s*E\s*N\s*D\s*I\s*X\b", ln, re.I):
+            break                                # 进入附录，参考文献结束
+        if re.match(r"^Published as a conference paper", ln, re.I) or \
+           re.match(r"^Proceedings of the ", ln):
+            continue                             # 页眉噪声
+        cur = (cur + " " + ln).strip() if cur else ln
+        if re.search(r"(?:19|20)\d{2}[a-z]?\.\s*$", cur) and len(cur) > 25:
+            entries.append(cur)
+            cur = ""
+    # 末尾残留（附录表格等）里没有年份就不收
+    if cur.strip() and re.search(r"(?:19|20)\d{2}", cur):
+        entries.append(cur.strip())
+    return [re.sub(r"\s+", " ", e).strip() for e in entries if len(e) > 20]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pdf", required=True)
@@ -124,11 +159,15 @@ def main():
         sys.exit(f"在 {args.start_page} 页之后未找到 References 标题")
 
     raw = collect_text(doc, pno, tail)
-    style = pick_style(raw)
+    style = pick_style(raw[:3000])   # 只看开头，避免被文末附录的 “1. …” 误导
 
     if style is None:
         refs = extract_unnumbered(doc, pno, tail)
-        kind = "无编号（作者—年份）"
+        kind = "无编号（作者—年份·姓名缩写）"
+        if len(refs) < 5:                       # 全名作者 → 改用“年份收尾”切分
+            alt = extract_by_year(doc, pno, tail)
+            if len(alt) > len(refs):
+                refs, kind = alt, "无编号（作者—年份·全名）"
     else:
         refs = extract_sequential(raw, style)
         refs = [r for r in refs if len(r) > 20]

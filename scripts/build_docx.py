@@ -29,6 +29,14 @@ ALIGN = {"just": WD_ALIGN_PARAGRAPH.JUSTIFY,
          "left": WD_ALIGN_PARAGRAPH.LEFT}
 
 
+_CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def clean(text):
+    """去掉 PDF 抽取带进来的控制字符，否则 lxml 写 XML 会报错。"""
+    return _CTRL.sub("", str(text))
+
+
 def cn_font(run, name="宋体", size=None, bold=None, italic=None, color=None):
     run.font.name = name
     rpr = run._element.get_or_add_rPr()
@@ -82,7 +90,7 @@ class Builder:
         p.paragraph_format.space_after = Pt(after)
         if indent and align == "just":
             p.paragraph_format.first_line_indent = Pt(size * 2)
-        run = p.add_run(text)
+        run = p.add_run(clean(text))
         cn_font(run, name, size, bold, italic, color)
         return p
 
@@ -93,7 +101,7 @@ class Builder:
         p.paragraph_format.left_indent = Pt(21)
         p.paragraph_format.first_line_indent = Pt(-21)
         p.paragraph_format.space_after = Pt(2)
-        cn_font(p.add_run(text), "宋体", size)
+        cn_font(p.add_run(clean(text)), "宋体", size)
 
     def equation(self, text, number=None):
         p = self.doc.add_paragraph()
@@ -269,23 +277,48 @@ class Builder:
         section("资助", back.get("funding"))
         section("声明", back.get("declaration"))
 
-        refs = back.get("refs") or {}
-        items = refs.get("items") or []
-        if items:
-            self.para("参考文献", size=14, bold=True, align="left", indent=False,
-                      before=10, after=4, name="黑体")
-            self.para("（以下保留英文原文，按原文顺序）", size=8.5, align="left",
-                      indent=False, after=4, color=RGBColor(0x66, 0x66, 0x66))
-            for r in items:
+        self._ref_count = len((back.get("refs") or {}).get("items") or [])
+
+    def refs_block(self):
+        items = ((self.cfg.get("back") or {}).get("refs") or {}).get("items") or []
+        if not items:
+            return
+        self.para("参考文献", size=14, bold=True, align="left", indent=False,
+                  before=10, after=4, name="黑体")
+        self.para("（以下保留英文原文，按原文顺序）", size=8.5, align="left",
+                  indent=False, after=4, color=RGBColor(0x66, 0x66, 0x66))
+        for r in items:
+            p = self.doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            p.paragraph_format.left_indent = Pt(17)
+            p.paragraph_format.first_line_indent = Pt(-17)
+            p.paragraph_format.space_after = Pt(2)
+            cn_font(p.add_run(clean(r)), "Times New Roman", 8.5)
+
+    def appendix_block(self):
+        """附录图表：补充图片（含图注）与表格清单，通常排在参考文献之后。"""
+        ap = self.cfg.get("appendix")
+        if not ap:
+            return
+        self.doc.add_page_break()
+        self.para(ap.get("title", "附录图表"), size=14, bold=True, align="left",
+                  indent=False, before=4, after=6, name="黑体")
+
+        for label in ap.get("figures", []):
+            self.figure(str(label))
+
+        tabs = ap.get("tables") or []
+        if tabs:
+            self.para("附录表格一览", size=12, bold=True, align="left",
+                      indent=False, before=10, after=4, name="黑体")
+            for label, desc in tabs:
                 p = self.doc.add_paragraph()
                 p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
                 p.paragraph_format.left_indent = Pt(17)
                 p.paragraph_format.first_line_indent = Pt(-17)
                 p.paragraph_format.space_after = Pt(2)
-                cn_font(p.add_run(r), "Times New Roman", 8.5)
-            self._ref_count = len(items)
-        else:
-            self._ref_count = 0
+                cn_font(p.add_run(f"{label}　"), "黑体", 9.5, True)
+                cn_font(p.add_run(desc), "宋体", 9.5)
 
     def save(self, out):
         self.doc.save(out)
@@ -308,12 +341,15 @@ def main():
     b.nomenclature()
     b.body_blocks()
     b.back_matter()
+    b.refs_block()
+    b.appendix_block()
     b.save(args.out)
 
     # 自检：内嵌图片数 vs 文中 fig 标记数
     import zipfile
     media = [n for n in zipfile.ZipFile(args.out).namelist() if n.startswith("word/media/")]
     fig_marks = sum(1 for it in cfg.get("body", []) if it[0] == "fig")
+    fig_marks += len((cfg.get("appendix") or {}).get("figures") or [])
     print(f"saved: {args.out}")
     print(f"paragraphs={len(b.doc.paragraphs)} tables={len(b.doc.tables)} "
           f"media={len(media)} figures_in_body={fig_marks} refs={getattr(b, '_ref_count', 0)}")

@@ -274,3 +274,50 @@ MuPDF 的 HTML 引擎对纯 CJK 连续串断行不可靠，会溢出栏宽压到
       r = r * page.rotation_matrix
   ```
 - 校验输出里会标 `[旋转]`，便于确认。
+
+---
+
+# v1.4 修复记录（ICLR 论文 + 左右并排图）
+
+### 35. 左右并排的两张图被裁到一起
+- 现象：ViT 论文 p7 上 Figure 3（左半 x108–294）与 Figure 4（右半 x308–494）并排，
+  两条图注 y 相同。按整栏宽裁切会把两张图裁进同一张。
+- 处理：新增 `figure_x_range()`——取 `[top, cy0]` 竖带内、**与图注 x 范围有水平重叠**的
+  图形/图像，求其 x 外接框；并排的另一张因无重叠被自动排除。
+- 配套：图注 y 区间重叠时（`abs(cy0 − prev_top) < 60`）不把上一图注底边当作本图上界，
+  否则第二张图会被压成 0 高度。
+
+### 36. 正文里的 “… as seen in Figure 6.” 被当成图注
+- 现象：P01 出现 8 张重复图，裁切区最长行 89–96 字符（明显是正文）。
+- 原因：行内搜索 `Figure N` 太宽松。
+- 处理：行内匹配（offset < 40）**只允许前缀是纯子图标签**（`a.` / `(b)` / `1.`），
+  正则收紧为 `^(\([A-Za-z0-9]{1,2}\)|[A-Za-z0-9]{1,2}[.)])$`——
+  否则 `in`（2 字母单词）也会被当成标签。
+
+### 37. 图注块首行是空行 / 图注与子图标签同块
+- 现象 A：P02 的图注块 `lines[0] == ""`，只看首行会全部漏检。
+- 现象 B：P02 的图注实际在 `a. b. c. d. Figure 3: Sample images…` 里，不在行首。
+- 处理：先剔除空行得到 `body_lines`；首行做「行首匹配 → 行内前 40 字符匹配」；
+  其后各行仅当**前面全是子图标签**时才允许匹配。
+
+### 38. 作者—年份（全名）参考文献：ICLR/NeurIPS 风格
+- 现象：ViT 的参考文献无编号、作者用全名（`Samira Abnar and Willem Zuidema. …`），
+  既不是 `[N]` 也不是 `N.`，`extract_unnumbered` 的「姓名缩写」模式只切出 1 条。
+- 处理：新增 `extract_by_year()`——这类条目几乎都以年份结尾，按「年份 + 句点」收尾来切。
+  ```python
+  if re.search(r"(?:19|20)\d{2}[a-z]?\.\s*$", cur): entries.append(cur); cur = ""
+  ```
+- 两个附带坑：
+  a) **风格判定要只看开头 3000 字符**，否则文末附录里的 `1. Training resolution is 224.`
+     会把风格误判成 `N.`；
+  b) **末尾残留要丢弃**——最后一段未闭合文本常是附录表格，若不含年份则不收；
+     页眉 `Published as a conference paper at ICLR 2021` 也要过滤。
+
+### 39. docx 写入报 “no NULL bytes or control characters”
+- 现象：`ValueError: All strings must be XML compatible`。
+- 原因：PDF 抽取带进了 `\x10` 之类的控制字符。
+- 处理：`build_docx.py` 统一加 `clean()` 清洗 `[\x00-\x08\x0b\x0c\x0e-\x1f]`。
+
+### 40. 附录需要排在参考文献之后
+- `build_docx.py` 新增 `appendix_block()`：`body → 致谢/声明 → 参考文献 → 附录图表`。
+- `content.json` 支持 `appendix: {title, figures:[…], tables:[[label, desc], …]}`。

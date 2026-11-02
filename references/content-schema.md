@@ -60,6 +60,12 @@
     }
   },
 
+  "appendix": {                              // 可选：排在参考文献之后的附录图表
+    "title": "附录图表",
+    "figures": ["8", "9"],                   // 复用 figures 里的图注与 fig_<label>.png
+    "tables": [["表 3", "训练超参数"], ["表 4", "微调超参数"]]
+  },
+
   "style": {                                 // 可选，覆盖默认排版
     "body_size": 10.5,
     "line_spacing": 1.32,
