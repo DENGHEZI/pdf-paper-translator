@@ -130,8 +130,11 @@ def column_ranges(doc, sample=6):
     for pno in range(min(doc.page_count, sample)):
         page = doc[pno]
         pw = page.rect.width
+        ph = page.rect.height
         for r, _ in page_text_boxes(page):
             if r.x0 < pw * 0.05:
+                continue
+            if r.y1 < 55 or r.y0 > ph - 45:      # 页眉/页脚不参与栏数判定
                 continue
             if r.x1 <= mid + 2:
                 left += [r.x0, r.x1]
@@ -142,7 +145,9 @@ def column_ranges(doc, sample=6):
     for pno in range(min(doc.page_count, sample)):
         page = doc[pno]
         for r, _ in page_text_boxes(page):
-            if r.x0 < mid - 40 and r.x1 > mid + 40 and r.width > doc[pno].rect.width * 0.5:
+            if r.y1 < 55 or r.y0 > page.rect.height - 45:
+                continue                          # 页眉/页脚不算通栏正文
+            if r.x0 < mid - 40 and r.x1 > mid + 40 and r.width > page.rect.width * 0.5:
                 crossing += 1
     if crossing >= 3:
         return False, (lo, hi), (lo, hi)
@@ -284,6 +289,20 @@ def main():
             top = max([PAGE_MARGIN_TOP, prev_eff] + above)
             if top > cy0 - 40:
                 top = max(prev_eff, PAGE_MARGIN_TOP)
+
+            # 位图型插图：从本图最上面那张位图的顶端开始，避免把上方正文裁进来
+            imgs_here = []
+            for im in page.get_image_info():
+                r = fitz.Rect(im["bbox"])
+                if page.rotation:
+                    r = r * page.rotation_matrix
+                if r.width < 8 or r.height < 8:
+                    continue
+                if r.y1 <= cy0 - 2 and r.y1 > prev_eff + 2 and \
+                   min(r.x1, cx1) - max(r.x0, cx0) > 2:
+                    imgs_here.append(r)
+            if imgs_here:
+                top = max(top, min(r.y0 for r in imgs_here) - 4)
             fx0, fx1 = figure_x_range(page, top, cy0, cx0, cx1, x0, x1)
             rect = fitz.Rect(fx0, top + 2, fx1, cy0 - 2)
 
