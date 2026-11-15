@@ -197,16 +197,16 @@ def scan(page, col_w):
         joined = " ".join(body_lines)
 
         if TABLE_HEAD.match(first):                      # 表注
-            tables.append(r.y1)
+            tables.append((r.y1, r.x0, r.x1))
             continue
 
         nums = re.findall(r"\d+(?:\.\d+)?", joined)     # 表格数据行
         if w >= col_w * 0.50 and len(nums) >= 4 and 20 <= len(joined) <= 600:
-            tables.append(r.y1)
+            tables.append((r.y1, r.x0, r.x1))
             continue
 
         if w >= col_w * 0.72 and len(joined) >= 80:      # 正文段落
-            body.append(r.y1)
+            body.append((r.y1, r.x0, r.x1))
 
     caps.sort(key=lambda x: x[1])
     return caps, body, tables
@@ -285,7 +285,9 @@ def main():
             # 若本图注与上一图注在竖直方向重叠 → 二者是并排的，不能用 prev 压下界
             same_row = (prev_top >= 0 and cy0 < prev + 4 and abs(cy0 - prev_top) < 60)
             prev_eff = PAGE_MARGIN_TOP if same_row else prev
-            above = [y for y in (body + tables) if y <= cy0 - 2]
+            # 只考虑与本图注横向重叠的障碍物：左栏的表注不该压住右栏的图
+            above = [y for (y, bx0, bx1) in (body + tables)
+                     if y <= cy0 - 2 and min(bx1, cx1) - max(bx0, cx0) > 2]
             top = max([PAGE_MARGIN_TOP, prev_eff] + above)
             if top > cy0 - 40:
                 top = max(prev_eff, PAGE_MARGIN_TOP)
@@ -302,7 +304,9 @@ def main():
                    min(r.x1, cx1) - max(r.x0, cx0) > 2:
                     imgs_here.append(r)
             if imgs_here:
-                top = max(top, min(r.y0 for r in imgs_here) - 4)
+                # 位图就是这张图的本体：以它顶端为准（不早于上一图注底边）。
+                # 这样图内的标签行即使被误判成“表格行”，也不会把自己的上界压下去。
+                top = max(prev_eff, min(r.y0 for r in imgs_here) - 4)
             fx0, fx1 = figure_x_range(page, top, cy0, cx0, cx1, x0, x1)
             rect = fitz.Rect(fx0, top + 2, fx1, cy0 - 2)
 
@@ -312,7 +316,8 @@ def main():
                 imgs = [bbox_of(pp, im) for im in pp.get_image_info()]
                 if imgs:
                     last_y0 = min(r.y0 for r in imgs if r.y0 > 200)
-                    tb = [y for y in (body_prev + tables_prev) if y <= last_y0 - 2]
+                    tb = [y for (y, bx0, bx1) in (body_prev + tables_prev)
+                          if y <= last_y0 - 2 and min(bx1, cx1) - max(bx0, cx0) > 2]
                     t2 = max([PAGE_MARGIN_TOP] + tb)
                     rect = fitz.Rect(x0, t2 + 2, x1, footer_top(pp))
                     results.append((label, pno + 1, pno - 1, rect, True))
