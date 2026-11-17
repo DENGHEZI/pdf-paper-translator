@@ -132,6 +132,28 @@ class Builder:
         p.paragraph_format.space_after = Pt(8)
         cn_font(p.add_run(f"图 {label}　{cap}"), "宋体", 9)
 
+    def picture_table(self, label, caption):
+        """把整张表格作为图片插入（用于几十行的大评测表，避免转写数字出错）。"""
+        path = os.path.join(self.fig_dir, f"tab_{label}.png")
+        if os.path.exists(path):
+            width = self.fig_width
+            if fitz is not None:
+                pm = fitz.Pixmap(path)
+                aspect = pm.height / max(1, pm.width)
+                if width * aspect > self.fig_max_h:
+                    width = self.fig_max_h / aspect
+            p = self.doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            p.paragraph_format.space_before = Pt(6)
+            p.paragraph_format.space_after = Pt(2)
+            p.add_run().add_picture(path, width=Cm(width))
+        else:
+            print(f"  ! 表格图片缺失：{path}")
+        p = self.doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p.paragraph_format.space_after = Pt(8)
+        cn_font(p.add_run(clean(caption)), "宋体", 9)
+
     def table(self, label):
         spec = self.cfg.get("tables", {}).get(str(label))
         if not spec:
@@ -248,6 +270,8 @@ class Builder:
                 self.figure(item[1])
             elif kind == "table":
                 self.table(item[1])
+            elif kind == "pic":
+                self.picture_table(item[1], item[2])
             elif kind == "pagebreak":
                 self.doc.add_page_break()
             elif kind == "quote":
@@ -350,6 +374,7 @@ def main():
     media = [n for n in zipfile.ZipFile(args.out).namelist() if n.startswith("word/media/")]
     fig_marks = sum(1 for it in cfg.get("body", []) if it[0] == "fig")
     fig_marks += len((cfg.get("appendix") or {}).get("figures") or [])
+    fig_marks += sum(1 for it in cfg.get("body", []) if it[0] == "pic")
     print(f"saved: {args.out}")
     print(f"paragraphs={len(b.doc.paragraphs)} tables={len(b.doc.tables)} "
           f"media={len(media)} figures_in_body={fig_marks} refs={getattr(b, '_ref_count', 0)}")
