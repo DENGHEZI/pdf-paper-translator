@@ -94,6 +94,7 @@ paragraphs=163 tables=8 media=12 figures_in_body=12 refs=38
 │   ├── extract_text.py          # 全文 + 块清单
 │   ├── extract_figures.py       # 图注锚定抽图（核心）
 │   ├── extract_references.py    # 参考文献切分
+│   ├── extract_tables.py        # 大表格整张裁图（避免转写数字出错）
 │   └── build_docx.py            # content.json → docx
 ├── references/
 │   ├── pitfalls.md              # 19 个真实踩坑与解法

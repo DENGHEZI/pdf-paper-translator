@@ -28,7 +28,11 @@ python scripts/probe_pdf.py --pdf INPUT.pdf
 # 2) 抽取全文与块清单（翻译时照着块清单逐段译，避免漏段）
 python scripts/extract_text.py --pdf INPUT.pdf --out-dir work/
 
-# 3) 抽图（按图注锚定，自动处理跨页图/窄图注/正文干扰）
+# 3a) 抽表（几十行的大数值表整张裁图，避免转写数字出错）
+python scripts/extract_tables.py --pdf INPUT.pdf --out-dir work/figures \
+    [--caption-side above|below] [--only 2,3,4]
+
+# 3b) 抽图（按图注锚定，自动处理跨页图/窄图注/正文干扰）
 python scripts/extract_figures.py --pdf INPUT.pdf --out-dir work/figures --dpi 250
 
 # 4) 生成
