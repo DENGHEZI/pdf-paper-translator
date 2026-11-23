@@ -117,6 +117,11 @@ def extract_unnumbered(doc, pno, tail_lines):
     return [re.sub(r"\s+", " ", e).strip() for e in entries if len(e) > 20]
 
 
+def cur_before_year(line):
+    """该行是否像参考文献开头（含年份或 arXiv 编号）。"""
+    return bool(re.search(r"(?:19|20)\d{2}|arXiv", line))
+
+
 def extract_by_year(doc, pno, tail_lines):
     """兜底二：无编号且作者用全名（ICLR/NeurIPS 风格）。
 
